@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>BigKev</AssemblyName>
+    <Product>BigKev</Product>
+    <Title>BigKev</Title>
+    <Description>DualSense controller profiles, remapping, and macros made simple.</Description>
+    <ApplicationIcon>Assets\BigKev.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Version>0.2.0</Version>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <RootNamespace>PadPilot</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="HidSharp" Version="2.6.4" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="HIDMaestro.Core"><HintPath>ThirdParty\HIDMaestro\HIDMaestro.Core.dll</HintPath><Private>true</Private></Reference>
+    <Content Include="ThirdParty\HIDMaestro\LICENSE.txt" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="ThirdParty\HIDMaestro\THIRD-PARTY-NOTICES.txt" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
+    <Resource Include="Assets\BigKev.png" />
+    <Resource Include="Assets\BigKev.ico" />
+    <Resource Include="Assets\DualSenseTest.png" />
+    <Resource Include="Assets\DualSenseTestLineArt.png" />
+    <Resource Include="Assets\DualSenseTestAngled.png" />
+  </ItemGroup>
+</Project>
+
