@@ -15,7 +15,7 @@ cleaner, easier-to-understand interface.
 - Live display for buttons, sticks, and analog triggers
 
 BigKev reads a physical DualSense over USB and uses HIDMaestro to expose a
-virtual DualSense output. The controller-test screen displays live button,
+virtual Xbox 360/XInput output for broad Windows game compatibility. The controller-test screen displays live button,
 trigger, and stick activity.
 
 ## Build
