@@ -1,0 +1,173 @@
+From 3a571eed60e21208c0a74426e75b6a4c93aac041 Mon Sep 17 00:00:00 2001
+From: Claude <claude@anthropic.com>
+Date: Tue, 25 Aug 2026 15:57:53 +0000
+Subject: [PATCH] Add L1 hold: nudge right stick down, plus stability and UX
+ fixes
+
+- Add hold-L1-to-offset-right-stick-down feature (Profile settings +
+  VirtualDualSenseOutput + Stick tuning tab UI)
+- Fix cross-thread UI access in StateChanged handler that could crash
+  the app on controller input
+- Fix driver install button getting stuck disabled after a failed install
+- Make stick tuning controls (dead zones, L1 assist) apply live instead
+  of only after Save
+- Add confirmation dialog before deleting a profile
+- Keep sidebar profile name in sync while typing
+---
+ .../Controllers/VirtualDualSenseOutput.cs     |  9 ++++
+ src/PadPilot/MainWindow.xaml                  |  2 +-
+ src/PadPilot/MainWindow.xaml.cs               | 51 ++++++++++++++++---
+ src/PadPilot/Models/Profile.cs                |  6 +++
+ 4 files changed, 60 insertions(+), 8 deletions(-)
+
+diff --git a/src/PadPilot/Controllers/VirtualDualSenseOutput.cs b/src/PadPilot/Controllers/VirtualDualSenseOutput.cs
+index b58274b..da5a0ec 100644
+--- a/src/PadPilot/Controllers/VirtualDualSenseOutput.cs
++++ b/src/PadPilot/Controllers/VirtualDualSenseOutput.cs
+@@ -60,6 +60,7 @@ public sealed class VirtualDualSenseOutput : IDisposable
+             leftY = MacroAxis(leftY, macroActions, "Left Stick Up", "Left Stick Down");
+             rightX = MacroAxis(rightX, macroActions, "Right Stick Left", "Right Stick Right");
+             rightY = MacroAxis(rightY, macroActions, "Right Stick Up", "Right Stick Down");
++            rightY = ApplyL1RightStickDownAssist(rightY, input, profile);
+             var state = new HMGamepadState
+             {
+                 Axes = HMGamepadStateHelpers.StandardAxes(_profile, leftX, leftY, rightX, rightY, input.LeftTrigger / 255f, input.RightTrigger / 255f),
+@@ -76,6 +77,14 @@ public sealed class VirtualDualSenseOutput : IDisposable
+         return (float)Math.Clamp((n + 1) / 2, 0, 1);
+     }
+ 
++    private static float ApplyL1RightStickDownAssist(float rightY, DualSenseState input, Profile? profile)
++    {
++        if (profile is null || !profile.L1RightStickDownAssistEnabled) return rightY;
++        if (!input.Buttons.Contains("L1")) return rightY;
++        var amount = Math.Clamp(profile.L1RightStickDownAssistAmount, 0, 0.5);
++        return (float)Math.Clamp(0.5 + amount, 0, 1);
++    }
++
+     private static float MacroAxis(float physical, IReadOnlyCollection<string> actions, string negative, string positive)
+     {
+         var hasNegative = actions.Contains(negative, StringComparer.OrdinalIgnoreCase);
+diff --git a/src/PadPilot/MainWindow.xaml b/src/PadPilot/MainWindow.xaml
+index 44f5dcd..9a79208 100644
+--- a/src/PadPilot/MainWindow.xaml
++++ b/src/PadPilot/MainWindow.xaml
+@@ -7,7 +7,7 @@
+         <TabItem Header="Mappings"><Grid Margin="4,18,4,4"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><TextBlock Text="Profile name" Foreground="{StaticResource MutedBrush}"/><TextBox Grid.Row="1" x:Name="ProfileName" FontSize="17" TextChanged="ProfileName_TextChanged"/><DataGrid Grid.Row="2" x:Name="MappingsGrid" AutoGenerateColumns="False" CanUserAddRows="True" Margin="4,16" MinHeight="280"><DataGrid.Columns><DataGridTextColumn Header="DualSense input" Binding="{Binding Source}" Width="*"/><DataGridComboBoxColumn x:Name="MappingKindColumn" Header="Action" SelectedItemBinding="{Binding Kind}" Width="*"/><DataGridTextColumn Header="Output or macro name" Binding="{Binding Target}" Width="2*"/></DataGrid.Columns></DataGrid><StackPanel Grid.Row="3" Orientation="Horizontal"><Button Content="Save profile" Style="{StaticResource PrimaryButton}" Click="Save_Click"/><TextBlock Text="Use the exact macro name when Action is Macro." Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="12,0"/></StackPanel></Grid></TabItem>
+         <TabItem Header="Macros"><Grid Margin="4,18,4,4"><Grid.ColumnDefinitions><ColumnDefinition Width="220"/><ColumnDefinition Width="18"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="SAVED MACROS" Foreground="{StaticResource MutedBrush}" FontSize="10" FontWeight="Bold" Margin="6"/><ListBox x:Name="MacrosList" DisplayMemberPath="Name" SelectionChanged="MacrosList_SelectionChanged" Height="350"/><Button Content="＋  New macro" Style="{StaticResource PrimaryButton}" Click="NewMacro_Click"/></StackPanel><ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"><StackPanel Margin="0,0,12,0"><TextBlock Text="Macro name" Foreground="{StaticResource MutedBrush}"/><TextBox x:Name="MacroName"/><TextBlock Text="Trigger button" Foreground="{StaticResource MutedBrush}" Margin="4,8,0,0"/><ComboBox x:Name="MacroTriggerInput" Width="230" HorizontalAlignment="Left" Style="{StaticResource MacroComboBoxStyle}"/><CheckBox x:Name="MacroRepeat" Content="Repeat this sequence while the trigger button is held" Margin="6,10"/><ListBox x:Name="StepsList" Height="230" Margin="4,12" Background="#10131A"/><TextBlock Text="Add action" Foreground="{StaticResource MutedBrush}" FontSize="12" FontWeight="SemiBold"/><TextBlock Text="Choose a button, then press Press or Release. Use Wait to control timing." Foreground="{StaticResource MutedBrush}" FontSize="11" Margin="0,3,0,4"/><WrapPanel><ComboBox x:Name="MacroControlInput" Width="230" Style="{StaticResource MacroComboBoxStyle}"/><TextBox x:Name="MacroDelayInput" Width="90" Text="50" ToolTip="Delay in milliseconds"/><Button Content="Press" Click="AddPress_Click"/><Button Content="Release" Click="AddRelease_Click"/><Button Content="Wait" Click="AddWait_Click"/></WrapPanel><WrapPanel><Button Content="Remove selected" Click="RemoveStep_Click"/><Button Content="Save macro" Style="{StaticResource PrimaryButton}" Click="SaveMacro_Click"/></WrapPanel><TextBlock x:Name="MacroMessage" Foreground="#FF9A9A" Margin="6" TextWrapping="Wrap"/></StackPanel></ScrollViewer></Grid></TabItem>
+         <TabItem Header="Controller test"><Grid Margin="8,20"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions><StackPanel><TextBlock Text="Live DualSense test" FontSize="22" FontWeight="SemiBold"/><TextBlock Text="Buttons glow purple only when BigKev receives input from your physical controller." Foreground="{StaticResource MutedBrush}" Margin="0,4,0,14"/></StackPanel><Viewbox Grid.Row="1" Stretch="Uniform"><Canvas Width="660" Height="440"><Image Source="Assets/DualSenseTestAngled.png" Width="660" Height="440" Stretch="Uniform"/><Border x:Name="VizL1" Canvas.Left="132" Canvas.Top="76" Width="74" Height="34" CornerRadius="17" Background="Transparent"/><Border x:Name="VizR1" Canvas.Left="454" Canvas.Top="76" Width="74" Height="34" CornerRadius="17" Background="Transparent"/><Border x:Name="VizDpadUp" Canvas.Left="145" Canvas.Top="156" Width="38" Height="38" CornerRadius="19" Background="Transparent"/><Border x:Name="VizDpadLeft" Canvas.Left="120" Canvas.Top="181" Width="38" Height="38" CornerRadius="19" Background="Transparent"/><Border x:Name="VizDpadRight" Canvas.Left="170" Canvas.Top="181" Width="38" Height="38" CornerRadius="19" Background="Transparent"/><Border x:Name="VizDpadDown" Canvas.Left="145" Canvas.Top="206" Width="38" Height="38" CornerRadius="19" Background="Transparent"/><Border x:Name="VizTriangle" Canvas.Left="473" Canvas.Top="145" Width="38" Height="38" CornerRadius="19" Background="Transparent"/><Border x:Name="VizSquare" Canvas.Left="438" Canvas.Top="180" Width="38" Height="38" CornerRadius="19" Background="Transparent"/><Border x:Name="VizCircle" Canvas.Left="510" Canvas.Top="180" Width="38" Height="38" CornerRadius="19" Background="Transparent"/><Border x:Name="VizCross" Canvas.Left="473" Canvas.Top="215" Width="38" Height="38" CornerRadius="19" Background="Transparent"/><Border x:Name="VizCreate" Canvas.Left="196" Canvas.Top="127" Width="28" Height="28" CornerRadius="14" Background="Transparent"/><Border x:Name="VizOptions" Canvas.Left="436" Canvas.Top="127" Width="28" Height="28" CornerRadius="14" Background="Transparent"/><Border x:Name="VizPS" Canvas.Left="312" Canvas.Top="235" Width="36" Height="36" CornerRadius="18" Background="Transparent"/><Ellipse x:Name="VizL3" Canvas.Left="219" Canvas.Top="237" Width="50" Height="50" Fill="Transparent"/><Ellipse x:Name="VizR3" Canvas.Left="387" Canvas.Top="237" Width="50" Height="50" Fill="Transparent"/><TextBlock x:Name="VizStickValues" Canvas.Left="235" Canvas.Top="410" Width="190" Text="Sticks waiting for input" TextAlignment="Center" Foreground="#E4E7EF" Background="#AA111318"/></Canvas></Viewbox></Grid></TabItem>
+-        <TabItem Header="Stick tuning"><StackPanel Margin="8,28" MaxWidth="650" HorizontalAlignment="Left"><TextBlock Text="Fine-tune your sticks" FontSize="22" FontWeight="SemiBold"/><TextBlock Text="Increase a dead zone only when a stick moves by itself." Foreground="{StaticResource MutedBrush}" Margin="0,4,0,28"/><TextBlock Text="Left stick dead zone" FontSize="15"/><Slider x:Name="LeftDeadZone" Minimum="0" Maximum="0.4" TickFrequency="0.01" Margin="0,12,0,30"/><TextBlock Text="Right stick dead zone" FontSize="15"/><Slider x:Name="RightDeadZone" Minimum="0" Maximum="0.4" TickFrequency="0.01" Margin="0,12,0,30"/><Button Content="Save tuning" Style="{StaticResource PrimaryButton}" HorizontalAlignment="Left" Click="Save_Click"/></StackPanel></TabItem>
++        <TabItem Header="Stick tuning"><StackPanel Margin="8,28" MaxWidth="650" HorizontalAlignment="Left"><TextBlock Text="Fine-tune your sticks" FontSize="22" FontWeight="SemiBold"/><TextBlock Text="Increase a dead zone only when a stick moves by itself." Foreground="{StaticResource MutedBrush}" Margin="0,4,0,28"/><TextBlock Text="Left stick dead zone" FontSize="15"/><Slider x:Name="LeftDeadZone" Minimum="0" Maximum="0.4" TickFrequency="0.01" Margin="0,12,0,30" ValueChanged="StickTuningSlider_ValueChanged"/><TextBlock Text="Right stick dead zone" FontSize="15"/><Slider x:Name="RightDeadZone" Minimum="0" Maximum="0.4" TickFrequency="0.01" Margin="0,12,0,30" ValueChanged="StickTuningSlider_ValueChanged"/><CheckBox x:Name="L1DownAssistEnabled" Content="Hold L1: nudge right stick down" Margin="0,0,0,10" Checked="StickTuningCheckBox_Changed" Unchecked="StickTuningCheckBox_Changed"/><TextBlock Text="How far down (0 = center, 0.5 = full down)" FontSize="13" Foreground="{StaticResource MutedBrush}"/><Slider x:Name="L1DownAssistAmount" Minimum="0" Maximum="0.5" TickFrequency="0.01" Margin="0,12,0,30" ValueChanged="StickTuningSlider_ValueChanged"/><Button Content="Save tuning" Style="{StaticResource PrimaryButton}" HorizontalAlignment="Left" Click="Save_Click"/></StackPanel></TabItem>
+       </TabControl></Border></Grid>
+     <Border Grid.Row="2" Grid.ColumnSpan="2" Background="#10131A" BorderBrush="#242A36" BorderThickness="0,1,0,0" Padding="24,0"><TextBlock x:Name="StatusLabel" Text="Ready" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center"/></Border>
+   </Grid>
+diff --git a/src/PadPilot/MainWindow.xaml.cs b/src/PadPilot/MainWindow.xaml.cs
+index 8e42002..a4f83e2 100644
+--- a/src/PadPilot/MainWindow.xaml.cs
++++ b/src/PadPilot/MainWindow.xaml.cs
+@@ -30,8 +30,15 @@ public partial class MainWindow : Window
+         _controller.StatusChanged += message => Dispatcher.Invoke(() => ConnectionLabel.Text = message);
+         _controller.StateChanged += state =>
+         {
+-            _output.Update(state, Current);
+-            Dispatcher.Invoke(() => { LiveInputLabel.Text = state.Summary; UpdateControllerDisplay(state); });
++            // StateChanged fires on the background USB-reading thread. Every touch of the UI
++            // (including reading Current, which reads ProfilesList.SelectedItem) must happen on
++            // the dispatcher thread or WPF throws.
++            Dispatcher.Invoke(() =>
++            {
++                _output.Update(state, Current);
++                LiveInputLabel.Text = state.Summary;
++                UpdateControllerDisplay(state);
++            });
+         };
+         _output.StatusChanged += message => Dispatcher.Invoke(() => StatusLabel.Text = message);
+         Closed += (_, _) => { _controller.Dispose(); _output.Dispose(); };
+@@ -68,24 +75,53 @@ public partial class MainWindow : Window
+         MacrosList.ItemsSource = profile.Macros;
+         LeftDeadZone.Value = profile.LeftStickDeadZone;
+         RightDeadZone.Value = profile.RightStickDeadZone;
++        L1DownAssistEnabled.IsChecked = profile.L1RightStickDownAssistEnabled;
++        L1DownAssistAmount.Value = profile.L1RightStickDownAssistAmount;
+     }
+ 
+     private void ProfilesList_SelectionChanged(object sender, SelectionChangedEventArgs e) => BindProfile(Current);
+-    private void ProfileName_TextChanged(object sender, TextChangedEventArgs e) { if (Current is not null) Current.Name = ProfileName.Text; }
++    private void ProfileName_TextChanged(object sender, TextChangedEventArgs e)
++    {
++        // Profile isn't a bindable/observable type, so the sidebar ListBox won't pick up the
++        // renamed profile on its own — nudge it to refresh so the list stays in sync as you type.
++        if (Current is null) return;
++        Current.Name = ProfileName.Text;
++        ProfilesList.Items.Refresh();
++    }
+     private void NewProfile_Click(object sender, RoutedEventArgs e) { var p = CreateStarterProfile(); p.Id = Guid.NewGuid(); p.Name = "New profile"; _profiles.Add(p); ProfilesList.SelectedItem = p; }
+     private void DuplicateProfile_Click(object sender, RoutedEventArgs e)
+     {
+         if (Current is null) return;
+         var copy = new Profile { Name = Current.Name + " copy", LeftStickDeadZone = Current.LeftStickDeadZone, RightStickDeadZone = Current.RightStickDeadZone,
++            L1RightStickDownAssistEnabled = Current.L1RightStickDownAssistEnabled, L1RightStickDownAssistAmount = Current.L1RightStickDownAssistAmount,
+             Mappings = Current.Mappings.Select(m => new ButtonMapping { Source = m.Source, Target = m.Target, Kind = m.Kind }).ToList(),
+             Macros = Current.Macros.Select(CloneMacro).ToList() };
+         _profiles.Add(copy); ProfilesList.SelectedItem = copy;
+     }
+-    private void DeleteProfile_Click(object sender, RoutedEventArgs e) { if (Current is null || _profiles.Count == 1) return; var doomed = Current; _profiles.Remove(doomed); _store.Delete(doomed); ProfilesList.SelectedIndex = 0; }
+-    private async void Save_Click(object sender, RoutedEventArgs e)
++    private void DeleteProfile_Click(object sender, RoutedEventArgs e)
++    {
++        if (Current is null || _profiles.Count == 1) return;
++        var doomed = Current;
++        var confirmed = MessageBox.Show($"Delete the profile \"{doomed.Name}\"? This cannot be undone.", "Delete profile",
++            MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) == MessageBoxResult.Yes;
++        if (!confirmed) return;
++        _profiles.Remove(doomed); _store.Delete(doomed); ProfilesList.SelectedIndex = 0;
++    }
++    private void ApplyStickTuning()
+     {
+         if (Current is null) return;
+         Current.LeftStickDeadZone = LeftDeadZone.Value; Current.RightStickDeadZone = RightDeadZone.Value;
++        Current.L1RightStickDownAssistEnabled = L1DownAssistEnabled.IsChecked == true; Current.L1RightStickDownAssistAmount = L1DownAssistAmount.Value;
++    }
++    // Sliders and the checkbox apply immediately (like the mappings grid already does) so you can
++    // hold L1 and drag the amount slider to feel out the right value before saving to disk.
++    private void StickTuningSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e) => ApplyStickTuning();
++    private void StickTuningCheckBox_Changed(object sender, RoutedEventArgs e) => ApplyStickTuning();
++
++    private async void Save_Click(object sender, RoutedEventArgs e)
++    {
++        if (Current is null) return;
++        ApplyStickTuning();
+         await _store.SaveAsync(Current); ProfilesList.Items.Refresh(); StatusLabel.Text = $"Saved {Current.Name}";
+     }
+ 
+@@ -132,8 +168,9 @@ public partial class MainWindow : Window
+         await Task.Delay(600);
+         _controller.ExcludeDevicePaths(DualSenseUsbReader.CurrentDevicePaths().Except(physicalBeforeOutput));
+         _controller.Start();
+-        DriverInstallButton.Content = "Driver installed";
+-        StatusLabel.Text = _output.IsReady ? "Virtual PS5 DualSense active" : "Driver setup did not complete. Check the status message above.";
++        DriverInstallButton.Content = _output.IsReady ? "Driver installed" : "Install DualSense driver";
++        DriverInstallButton.IsEnabled = !_output.IsReady;
++        StatusLabel.Text = _output.IsReady ? "Virtual PS5 DualSense active" : "Driver setup did not complete. Check the status message above, then try again.";
+     }
+ 
+     private void UpdateControllerDisplay(DualSenseState state)
+diff --git a/src/PadPilot/Models/Profile.cs b/src/PadPilot/Models/Profile.cs
+index 3539869..14f0f31 100644
+--- a/src/PadPilot/Models/Profile.cs
++++ b/src/PadPilot/Models/Profile.cs
+@@ -10,6 +10,12 @@ public sealed class Profile
+     public List<MacroDefinition> Macros { get; set; } = [];
+     public double LeftStickDeadZone { get; set; } = 0.08;
+     public double RightStickDeadZone { get; set; } = 0.08;
++
++    /// <summary>While L1 is held, force the right stick's vertical position down by this much
++    /// instead of passing through the physical stick's Y position. Range 0 (no effect) to 0.5
++    /// (full down). Right stick returns to normal the instant L1 is released.</summary>
++    public bool L1RightStickDownAssistEnabled { get; set; }
++    public double L1RightStickDownAssistAmount { get; set; } = 0.2;
+ }
+ 
+ public sealed class ButtonMapping
+-- 
+2.43.0
+

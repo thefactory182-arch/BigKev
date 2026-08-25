@@ -30,8 +30,15 @@ public partial class MainWindow : Window
         _controller.StatusChanged += message => Dispatcher.Invoke(() => ConnectionLabel.Text = message);
         _controller.StateChanged += state =>
         {
-            _output.Update(state, Current);
-            Dispatcher.Invoke(() => { LiveInputLabel.Text = state.Summary; UpdateControllerDisplay(state); });
+            // StateChanged fires on the background USB-reading thread. Every touch of the UI
+            // (including reading Current, which reads ProfilesList.SelectedItem) must happen on
+            // the dispatcher thread or WPF throws.
+            Dispatcher.Invoke(() =>
+            {
+                _output.Update(state, Current);
+                LiveInputLabel.Text = state.Summary;
+                UpdateControllerDisplay(state);
+            });
         };
         _output.StatusChanged += message => Dispatcher.Invoke(() => StatusLabel.Text = message);
         Closed += (_, _) => { _controller.Dispose(); _output.Dispose(); };
@@ -68,24 +75,53 @@ public partial class MainWindow : Window
         MacrosList.ItemsSource = profile.Macros;
         LeftDeadZone.Value = profile.LeftStickDeadZone;
         RightDeadZone.Value = profile.RightStickDeadZone;
+        L1DownAssistEnabled.IsChecked = profile.L1RightStickDownAssistEnabled;
+        L1DownAssistAmount.Value = profile.L1RightStickDownAssistAmount;
     }
 
     private void ProfilesList_SelectionChanged(object sender, SelectionChangedEventArgs e) => BindProfile(Current);
-    private void ProfileName_TextChanged(object sender, TextChangedEventArgs e) { if (Current is not null) Current.Name = ProfileName.Text; }
+    private void ProfileName_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        // Profile isn't a bindable/observable type, so the sidebar ListBox won't pick up the
+        // renamed profile on its own — nudge it to refresh so the list stays in sync as you type.
+        if (Current is null) return;
+        Current.Name = ProfileName.Text;
+        ProfilesList.Items.Refresh();
+    }
     private void NewProfile_Click(object sender, RoutedEventArgs e) { var p = CreateStarterProfile(); p.Id = Guid.NewGuid(); p.Name = "New profile"; _profiles.Add(p); ProfilesList.SelectedItem = p; }
     private void DuplicateProfile_Click(object sender, RoutedEventArgs e)
     {
         if (Current is null) return;
         var copy = new Profile { Name = Current.Name + " copy", LeftStickDeadZone = Current.LeftStickDeadZone, RightStickDeadZone = Current.RightStickDeadZone,
+            L1RightStickDownAssistEnabled = Current.L1RightStickDownAssistEnabled, L1RightStickDownAssistAmount = Current.L1RightStickDownAssistAmount,
             Mappings = Current.Mappings.Select(m => new ButtonMapping { Source = m.Source, Target = m.Target, Kind = m.Kind }).ToList(),
             Macros = Current.Macros.Select(CloneMacro).ToList() };
         _profiles.Add(copy); ProfilesList.SelectedItem = copy;
     }
-    private void DeleteProfile_Click(object sender, RoutedEventArgs e) { if (Current is null || _profiles.Count == 1) return; var doomed = Current; _profiles.Remove(doomed); _store.Delete(doomed); ProfilesList.SelectedIndex = 0; }
-    private async void Save_Click(object sender, RoutedEventArgs e)
+    private void DeleteProfile_Click(object sender, RoutedEventArgs e)
+    {
+        if (Current is null || _profiles.Count == 1) return;
+        var doomed = Current;
+        var confirmed = MessageBox.Show($"Delete the profile \"{doomed.Name}\"? This cannot be undone.", "Delete profile",
+            MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) == MessageBoxResult.Yes;
+        if (!confirmed) return;
+        _profiles.Remove(doomed); _store.Delete(doomed); ProfilesList.SelectedIndex = 0;
+    }
+    private void ApplyStickTuning()
     {
         if (Current is null) return;
         Current.LeftStickDeadZone = LeftDeadZone.Value; Current.RightStickDeadZone = RightDeadZone.Value;
+        Current.L1RightStickDownAssistEnabled = L1DownAssistEnabled.IsChecked == true; Current.L1RightStickDownAssistAmount = L1DownAssistAmount.Value;
+    }
+    // Sliders and the checkbox apply immediately (like the mappings grid already does) so you can
+    // hold L1 and drag the amount slider to feel out the right value before saving to disk.
+    private void StickTuningSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e) => ApplyStickTuning();
+    private void StickTuningCheckBox_Changed(object sender, RoutedEventArgs e) => ApplyStickTuning();
+
+    private async void Save_Click(object sender, RoutedEventArgs e)
+    {
+        if (Current is null) return;
+        ApplyStickTuning();
         await _store.SaveAsync(Current); ProfilesList.Items.Refresh(); StatusLabel.Text = $"Saved {Current.Name}";
     }
 
@@ -132,8 +168,9 @@ public partial class MainWindow : Window
         await Task.Delay(600);
         _controller.ExcludeDevicePaths(DualSenseUsbReader.CurrentDevicePaths().Except(physicalBeforeOutput));
         _controller.Start();
-        DriverInstallButton.Content = "Driver installed";
-        StatusLabel.Text = _output.IsReady ? "Virtual PS5 DualSense active" : "Driver setup did not complete. Check the status message above.";
+        DriverInstallButton.Content = _output.IsReady ? "Driver installed" : "Install DualSense driver";
+        DriverInstallButton.IsEnabled = !_output.IsReady;
+        StatusLabel.Text = _output.IsReady ? "Virtual PS5 DualSense active" : "Driver setup did not complete. Check the status message above, then try again.";
     }
 
     private void UpdateControllerDisplay(DualSenseState state)

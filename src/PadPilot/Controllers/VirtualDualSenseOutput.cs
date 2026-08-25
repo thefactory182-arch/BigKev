@@ -60,6 +60,7 @@ public sealed class VirtualDualSenseOutput : IDisposable
             leftY = MacroAxis(leftY, macroActions, "Left Stick Up", "Left Stick Down");
             rightX = MacroAxis(rightX, macroActions, "Right Stick Left", "Right Stick Right");
             rightY = MacroAxis(rightY, macroActions, "Right Stick Up", "Right Stick Down");
+            rightY = ApplyL1RightStickDownAssist(rightY, input, profile);
             var state = new HMGamepadState
             {
                 Axes = HMGamepadStateHelpers.StandardAxes(_profile, leftX, leftY, rightX, rightY, input.LeftTrigger / 255f, input.RightTrigger / 255f),
@@ -74,6 +75,14 @@ public sealed class VirtualDualSenseOutput : IDisposable
         var n = (value - 127.5) / 127.5; var magnitude = Math.Abs(n);
         n = magnitude <= deadZone ? 0 : Math.Sign(n) * (magnitude - deadZone) / (1 - deadZone);
         return (float)Math.Clamp((n + 1) / 2, 0, 1);
+    }
+
+    private static float ApplyL1RightStickDownAssist(float rightY, DualSenseState input, Profile? profile)
+    {
+        if (profile is null || !profile.L1RightStickDownAssistEnabled) return rightY;
+        if (!input.Buttons.Contains("L1")) return rightY;
+        var amount = Math.Clamp(profile.L1RightStickDownAssistAmount, 0, 0.5);
+        return (float)Math.Clamp(0.5 + amount, 0, 1);
     }
 
     private static float MacroAxis(float physical, IReadOnlyCollection<string> actions, string negative, string positive)
