@@ -8,21 +8,41 @@ public sealed class VirtualDualSenseOutput : IDisposable
     private HMContext? _context;
     private HMController? _controller;
     private HMProfile? _profile;
+    private VirtualOutputMode? _activeMode;
     private readonly object _sync = new();
     private readonly MacroRuntime _macros = new();
     public bool IsReady => _controller is not null;
     public event Action<string>? StatusChanged;
+    public event Action<IReadOnlySet<string>>? VirtualDualSensePathsChanged;
 
-    public void Start()
+    public void Start(VirtualOutputMode mode = VirtualOutputMode.XboxXInput)
+    {
+        lock (_sync) StartCore(mode);
+    }
+
+    private void StartCore(VirtualOutputMode mode)
     {
         try
         {
-            _context = new HMContext();
+            var dualSensePathsBefore = DualSenseUsbReader.CurrentDevicePaths();
+            _controller?.Dispose();
+            _controller = null;
+            _profile = null;
+            _activeMode = null;
+            _context ??= new HMContext();
             _context.LoadDefaultProfiles();
             if (!_context.IsDriverInstalled) { StatusChanged?.Invoke("DualSense output driver required — use the download link"); return; }
-            _profile = _context.GetProfile("dualsense") ?? throw new InvalidOperationException("DualSense profile unavailable.");
+            var profileId = mode == VirtualOutputMode.PlayStationDualSense ? "dualsense" : "xbox-360-wired";
+            _profile = _context.GetProfile(profileId) ?? throw new InvalidOperationException($"{profileId} output profile unavailable.");
             _controller = _context.CreateController(_profile);
-            StatusChanged?.Invoke("Virtual PS5 DualSense active");
+            _activeMode = mode;
+            VirtualDualSensePathsChanged?.Invoke(mode == VirtualOutputMode.PlayStationDualSense
+                ? DualSenseUsbReader.CurrentDevicePaths().Except(dualSensePathsBefore).ToHashSet(StringComparer.OrdinalIgnoreCase)
+                : new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+            SubmitNeutralState();
+            StatusChanged?.Invoke(mode == VirtualOutputMode.PlayStationDualSense
+                ? "Virtual PlayStation DualSense active"
+                : "Virtual Xbox controller active (XInput)");
         }
         catch (UnauthorizedAccessException) { Dispose(); StatusChanged?.Invoke("Run BigKev as administrator for virtual DualSense output"); }
         catch (Exception ex) { Dispose(); StatusChanged?.Invoke($"DualSense output unavailable: {ex.Message}"); }
@@ -51,6 +71,8 @@ public sealed class VirtualDualSenseOutput : IDisposable
     {
         lock (_sync)
         {
+            var requestedMode = profile?.OutputMode ?? VirtualOutputMode.XboxXInput;
+            if (_activeMode != requestedMode) StartCore(requestedMode);
             if (_controller is null || _profile is null) return;
             var leftDz = profile?.LeftStickDeadZone ?? 0.08; var rightDz = profile?.RightStickDeadZone ?? 0.08;
             var macroActions = _macros.UpdateAndGet(input, profile);
@@ -60,7 +82,7 @@ public sealed class VirtualDualSenseOutput : IDisposable
             leftY = MacroAxis(leftY, macroActions, "Left Stick Up", "Left Stick Down");
             rightX = MacroAxis(rightX, macroActions, "Right Stick Left", "Right Stick Right");
             rightY = MacroAxis(rightY, macroActions, "Right Stick Up", "Right Stick Down");
-            rightY = ApplyL1RightStickDownAssist(rightY, input, profile);
+            rightY = ApplyL2RightStickDownAssist(rightY, input, profile);
             var state = new HMGamepadState
             {
                 Axes = HMGamepadStateHelpers.StandardAxes(_profile, leftX, leftY, rightX, rightY, input.LeftTrigger / 255f, input.RightTrigger / 255f),
@@ -77,12 +99,24 @@ public sealed class VirtualDualSenseOutput : IDisposable
         return (float)Math.Clamp((n + 1) / 2, 0, 1);
     }
 
-    private static float ApplyL1RightStickDownAssist(float rightY, DualSenseState input, Profile? profile)
+    private static float ApplyL2RightStickDownAssist(float rightY, DualSenseState input, Profile? profile)
     {
-        if (profile is null || !profile.L1RightStickDownAssistEnabled) return rightY;
-        if (!input.Buttons.Contains("L1")) return rightY;
-        var amount = Math.Clamp(profile.L1RightStickDownAssistAmount, 0, 0.5);
+        if (profile is null || !profile.L2RightStickDownAssistEnabled) return rightY;
+        if (!input.Buttons.Contains("L2") && input.LeftTrigger < 8) return rightY;
+        var amount = Math.Clamp(profile.L2RightStickDownAssistAmount, 0, 0.5);
         return (float)Math.Clamp(0.5 + amount, 0, 1);
+    }
+
+    private void SubmitNeutralState()
+    {
+        if (_controller is null || _profile is null) return;
+        var state = new HMGamepadState
+        {
+            Axes = HMGamepadStateHelpers.StandardAxes(_profile, 0.5f, 0.5f, 0.5f, 0.5f, 0f, 0f),
+            Buttons = HMButton.None,
+            Hat = HMHat.None
+        };
+        _controller.SubmitState(in state);
     }
 
     private static float MacroAxis(float physical, IReadOnlyCollection<string> actions, string negative, string positive)
@@ -124,6 +158,6 @@ public sealed class VirtualDualSenseOutput : IDisposable
         if(u)return HMHat.North;if(r)return HMHat.East;if(d)return HMHat.South;if(l)return HMHat.West;return HMHat.None;
     }
 
-    public void Dispose() { lock (_sync) { _macros.Dispose(); _controller?.Dispose(); _controller=null; _profile=null; _context?.Dispose(); _context=null; } }
+    public void Dispose() { lock (_sync) { _macros.Dispose(); _controller?.Dispose(); _controller=null; _profile=null; _activeMode=null; _context?.Dispose(); _context=null; } }
 }
 

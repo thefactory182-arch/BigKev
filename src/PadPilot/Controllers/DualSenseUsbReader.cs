@@ -12,6 +12,9 @@ public sealed class DualSenseUsbReader : IDisposable
     private CancellationTokenSource? _stop;
     private Task? _readerTask;
     private HashSet<string> _excludedPaths = new(StringComparer.OrdinalIgnoreCase);
+    private HidStream? _stream;
+    private readonly object _outputSync = new();
+    private bool _managedIndicatorEnabled;
 
     public event Action<string>? StatusChanged;
     public event Action<DualSenseState>? StateChanged;
@@ -54,6 +57,8 @@ public sealed class DualSenseUsbReader : IDisposable
 
                 using (stream)
                 {
+                    lock (_outputSync) _stream = stream;
+                    ApplyManagedIndicator();
                     stream.ReadTimeout = 1000;
                     StatusChanged?.Invoke("DualSense connected by USB");
                     var report = new byte[Math.Max(64, device.GetMaxInputReportLength())];
@@ -65,11 +70,13 @@ public sealed class DualSenseUsbReader : IDisposable
                         if (read < 11 || report[0] != 0x01) continue;
                         StateChanged?.Invoke(Parse(report));
                     }
+                    lock (_outputSync) _stream = null;
                 }
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
+                lock (_outputSync) _stream = null;
                 StatusChanged?.Invoke("DualSense disconnected");
                 await Task.Delay(500, token).ConfigureAwait(false);
             }
@@ -103,8 +110,41 @@ public sealed class DualSenseUsbReader : IDisposable
         if ((value & (1 << bit)) != 0) target.Add(name);
     }
 
+    public void SetManagedIndicator(bool enabled)
+    {
+        _managedIndicatorEnabled = enabled;
+        ApplyManagedIndicator();
+    }
+
+    private void ApplyManagedIndicator()
+    {
+        lock (_outputSync)
+        {
+            if (_stream is null) return;
+            try
+            {
+                var report = new byte[63];
+                report[0] = 0x02; // Wired DualSense output report.
+                if (_managedIndicatorEnabled)
+                {
+                    report[2] = 0x04; // Lightbar control enabled.
+                    report[45] = 139; // BigKev purple: RGB 139, 108, 255.
+                    report[46] = 108;
+                    report[47] = 255;
+                }
+                else
+                {
+                    report[2] = 0x08; // Release LEDs back to the controller/game.
+                }
+                _stream.Write(report);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        }
+    }
+
     public void Dispose()
     {
+        SetManagedIndicator(false);
         _stop?.Cancel();
         _stop?.Dispose();
         _stop = null;
