@@ -10,12 +10,29 @@ public sealed class Profile
     public List<MacroDefinition> Macros { get; set; } = [];
     public double LeftStickDeadZone { get; set; } = 0.08;
     public double RightStickDeadZone { get; set; } = 0.08;
+    public VirtualOutputMode OutputMode { get; set; } = VirtualOutputMode.XboxXInput;
 
-    /// <summary>While L1 is held, force the right stick's vertical position down by this much
+    /// <summary>While L2 is held, force the right stick's vertical position down by this much
     /// instead of passing through the physical stick's Y position. Range 0 (no effect) to 0.5
-    /// (full down). Right stick returns to normal the instant L1 is released.</summary>
-    public bool L1RightStickDownAssistEnabled { get; set; }
-    public double L1RightStickDownAssistAmount { get; set; } = 0.2;
+    /// (full down). Right stick returns to normal the instant L2 is released.</summary>
+    public bool L2RightStickDownAssistEnabled { get; set; }
+    public double L2RightStickDownAssistAmount { get; set; } = 0.2;
+
+    [JsonPropertyName("L1RightStickDownAssistEnabled")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool LegacyL1RightStickDownAssistEnabled
+    {
+        get => false;
+        set { if (value) L2RightStickDownAssistEnabled = true; }
+    }
+
+    [JsonPropertyName("L1RightStickDownAssistAmount")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public double LegacyL1RightStickDownAssistAmount
+    {
+        get => 0;
+        set { if (value > 0) L2RightStickDownAssistAmount = value; }
+    }
 }
 
 public sealed class ButtonMapping
@@ -24,6 +41,9 @@ public sealed class ButtonMapping
     public string Target { get; set; } = "A";
     public MappingKind Kind { get; set; } = MappingKind.Gamepad;
 }
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum VirtualOutputMode { XboxXInput, PlayStationDualSense }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum MappingKind { Gamepad, Keyboard, Macro, Disabled }
