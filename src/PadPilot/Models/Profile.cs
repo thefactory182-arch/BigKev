@@ -12,9 +12,9 @@ public sealed class Profile
     public double RightStickDeadZone { get; set; } = 0.08;
     public VirtualOutputMode OutputMode { get; set; } = VirtualOutputMode.XboxXInput;
 
-    /// <summary>While L2 is held, force the right stick's vertical position down by this much
+    /// <summary>While L2 and R2 are both held, force the right stick's vertical position down by this much
     /// instead of passing through the physical stick's Y position. Range 0 (no effect) to 0.5
-    /// (full down). Right stick returns to normal the instant L2 is released.</summary>
+    /// (full down). Right stick returns to normal the instant either trigger is released.</summary>
     public bool L2RightStickDownAssistEnabled { get; set; }
     public double L2RightStickDownAssistAmount { get; set; } = 0.2;
 
