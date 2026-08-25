@@ -71,6 +71,7 @@ public static class UpdateService
 
     public static bool HandleStartupArguments(string[] args)
     {
+        CleanupStaleUpdateDirectories();
         if (args.Length >= 4 && args[0] == "--apply-update")
         {
             ApplyUpdate(args[1], args[2], int.Parse(args[3]));
@@ -95,11 +96,24 @@ public static class UpdateService
                 catch (IOException ex) { last = ex; Thread.Sleep(250); }
             }
             if (last is not null) throw last;
-            var restart = new ProcessStartInfo(target) { UseShellExecute = true };
-            restart.ArgumentList.Add("--cleanup-update");
-            restart.ArgumentList.Add(Path.GetDirectoryName(downloaded)!);
-            restart.ArgumentList.Add(Environment.ProcessId.ToString());
-            Process.Start(restart);
+            try
+            {
+                var restart = new ProcessStartInfo(target)
+                {
+                    UseShellExecute = true,
+                    WorkingDirectory = Path.GetDirectoryName(target)!
+                };
+                restart.ArgumentList.Add("--cleanup-update");
+                restart.ArgumentList.Add(Path.GetDirectoryName(downloaded)!);
+                restart.ArgumentList.Add(Environment.ProcessId.ToString());
+                Process.Start(restart);
+            }
+            catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode is 1260 or 5)
+            {
+                System.Windows.MessageBox.Show(
+                    "BigKev was updated successfully, but Windows Application Control prevented the updater from reopening it automatically.\n\nOpen BigKev.exe yourself to start the new version.",
+                    "Update installed");
+            }
         }
         catch (Exception ex)
         {
@@ -112,6 +126,25 @@ public static class UpdateService
     {
         await Task.Run(() => WaitForExit(updaterProcessId));
         try { Directory.Delete(directory, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+    }
+
+    private static void CleanupStaleUpdateDirectories()
+    {
+        try
+        {
+            foreach (var directory in Directory.EnumerateDirectories(Path.GetTempPath(), "BigKev-update-*"))
+            {
+                try
+                {
+                    if (Directory.GetLastWriteTimeUtc(directory) < DateTime.UtcNow.AddMinutes(-5))
+                        Directory.Delete(directory, true);
+                }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
 
     private static void WaitForExit(int processId)
@@ -128,3 +161,4 @@ public static class UpdateService
         return client;
     }
 }
+
