@@ -10,6 +10,8 @@ public sealed class Profile
     public List<MacroDefinition> Macros { get; set; } = [];
     public double LeftStickDeadZone { get; set; } = 0.08;
     public double RightStickDeadZone { get; set; } = 0.08;
+    public bool LeftStickDeadZoneEnabled { get; set; } = true;
+    public bool RightStickDeadZoneEnabled { get; set; } = true;
     public VirtualOutputMode OutputMode { get; set; } = VirtualOutputMode.XboxXInput;
 
     /// <summary>While L2 and R2 are both held, force the right stick's vertical position down by this much
