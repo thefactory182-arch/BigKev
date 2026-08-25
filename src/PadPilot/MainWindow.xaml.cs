@@ -7,6 +7,9 @@ using PadPilot.Controllers;
 using System.Diagnostics;
 using System.Windows.Navigation;
 using System.Windows.Media;
+using Microsoft.Win32;
+using System.IO;
+using System.Text.Json;
 
 namespace PadPilot;
 
@@ -27,6 +30,7 @@ public partial class MainWindow : Window
         MacroTriggerInput.ItemsSource = MacroControlInput.ItemsSource;
         MacroControlInput.SelectedIndex = 0;
         MacroTriggerInput.SelectedIndex = 0;
+        OutputModeInput.ItemsSource = Enum.GetValues<VirtualOutputMode>();
         _controller.StatusChanged += message => Dispatcher.Invoke(() => ConnectionLabel.Text = message);
         _controller.StateChanged += state =>
         {
@@ -40,7 +44,12 @@ public partial class MainWindow : Window
                 UpdateControllerDisplay(state);
             });
         };
-        _output.StatusChanged += message => Dispatcher.Invoke(() => StatusLabel.Text = message);
+        _output.StatusChanged += message => Dispatcher.Invoke(() =>
+        {
+            StatusLabel.Text = message;
+            _controller.SetManagedIndicator(_output.IsReady);
+        });
+        _output.VirtualDualSensePathsChanged += paths => _controller.ExcludeDevicePaths(paths);
         Closed += (_, _) => { _controller.Dispose(); _output.Dispose(); };
         ProfilesList.ItemsSource = _profiles;
         Loaded += async (_, _) =>
@@ -75,8 +84,9 @@ public partial class MainWindow : Window
         MacrosList.ItemsSource = profile.Macros;
         LeftDeadZone.Value = profile.LeftStickDeadZone;
         RightDeadZone.Value = profile.RightStickDeadZone;
-        L1DownAssistEnabled.IsChecked = profile.L1RightStickDownAssistEnabled;
-        L1DownAssistAmount.Value = profile.L1RightStickDownAssistAmount;
+        OutputModeInput.SelectedItem = profile.OutputMode;
+        L2DownAssistEnabled.IsChecked = profile.L2RightStickDownAssistEnabled;
+        L2DownAssistAmount.Value = profile.L2RightStickDownAssistAmount;
     }
 
     private void ProfilesList_SelectionChanged(object sender, SelectionChangedEventArgs e) => BindProfile(Current);
@@ -92,8 +102,8 @@ public partial class MainWindow : Window
     private void DuplicateProfile_Click(object sender, RoutedEventArgs e)
     {
         if (Current is null) return;
-        var copy = new Profile { Name = Current.Name + " copy", LeftStickDeadZone = Current.LeftStickDeadZone, RightStickDeadZone = Current.RightStickDeadZone,
-            L1RightStickDownAssistEnabled = Current.L1RightStickDownAssistEnabled, L1RightStickDownAssistAmount = Current.L1RightStickDownAssistAmount,
+        var copy = new Profile { Name = Current.Name + " copy", LeftStickDeadZone = Current.LeftStickDeadZone, RightStickDeadZone = Current.RightStickDeadZone, OutputMode = Current.OutputMode,
+            L2RightStickDownAssistEnabled = Current.L2RightStickDownAssistEnabled, L2RightStickDownAssistAmount = Current.L2RightStickDownAssistAmount,
             Mappings = Current.Mappings.Select(m => new ButtonMapping { Source = m.Source, Target = m.Target, Kind = m.Kind }).ToList(),
             Macros = Current.Macros.Select(CloneMacro).ToList() };
         _profiles.Add(copy); ProfilesList.SelectedItem = copy;
@@ -107,16 +117,63 @@ public partial class MainWindow : Window
         if (!confirmed) return;
         _profiles.Remove(doomed); _store.Delete(doomed); ProfilesList.SelectedIndex = 0;
     }
+
+    private async void ExportProfile_Click(object sender, RoutedEventArgs e)
+    {
+        if (Current is null) return;
+        ApplyStickTuning();
+        var dialog = new SaveFileDialog { Filter = "BigKev profile (*.bigkev.json)|*.bigkev.json|JSON (*.json)|*.json", FileName = SafeFileName(Current.Name) + ".bigkev.json" };
+        if (dialog.ShowDialog(this) != true) return;
+        await _store.ExportProfileAsync(Current, dialog.FileName);
+        StatusLabel.Text = $"Exported {Current.Name}";
+    }
+
+    private async void ExportAll_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new SaveFileDialog { Filter = "BigKev profile library (*.bigkev.json)|*.bigkev.json|JSON (*.json)|*.json", FileName = "BigKev-profile-library.bigkev.json" };
+        if (dialog.ShowDialog(this) != true) return;
+        await _store.ExportLibraryAsync(_profiles, dialog.FileName);
+        StatusLabel.Text = $"Exported {_profiles.Count} profiles";
+    }
+
+    private async void ImportProfiles_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new OpenFileDialog { Filter = "BigKev settings (*.bigkev.json;*.json)|*.bigkev.json;*.json", Multiselect = false };
+        if (dialog.ShowDialog(this) != true) return;
+        try
+        {
+            var imported = await _store.ImportAsync(dialog.FileName);
+            foreach (var profile in imported) _profiles.Add(profile);
+            ProfilesList.SelectedItem = imported[0];
+            StatusLabel.Text = $"Imported {imported.Count} profile{(imported.Count == 1 ? "" : "s")}";
+        }
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(ex.Message, "Could not import settings", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private static string SafeFileName(string value)
+    {
+        var invalid = Path.GetInvalidFileNameChars();
+        return string.Concat(value.Select(c => invalid.Contains(c) ? '_' : c));
+    }
     private void ApplyStickTuning()
     {
         if (Current is null) return;
         Current.LeftStickDeadZone = LeftDeadZone.Value; Current.RightStickDeadZone = RightDeadZone.Value;
-        Current.L1RightStickDownAssistEnabled = L1DownAssistEnabled.IsChecked == true; Current.L1RightStickDownAssistAmount = L1DownAssistAmount.Value;
+        Current.OutputMode = OutputModeInput.SelectedItem is VirtualOutputMode mode ? mode : VirtualOutputMode.XboxXInput;
+        Current.L2RightStickDownAssistEnabled = L2DownAssistEnabled.IsChecked == true; Current.L2RightStickDownAssistAmount = L2DownAssistAmount.Value;
     }
     // Sliders and the checkbox apply immediately (like the mappings grid already does) so you can
-    // hold L1 and drag the amount slider to feel out the right value before saving to disk.
+    // hold L2 and drag the amount slider to feel out the right value before saving to disk.
     private void StickTuningSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e) => ApplyStickTuning();
     private void StickTuningCheckBox_Changed(object sender, RoutedEventArgs e) => ApplyStickTuning();
+    private void OutputModeInput_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        ApplyStickTuning();
+        StatusLabel.Text = "Output mode will switch on the next controller input.";
+    }
 
     private async void Save_Click(object sender, RoutedEventArgs e)
     {
@@ -140,6 +197,34 @@ public partial class MainWindow : Window
     }
     private void AddStep(MacroAction action, string control, int delay) { if (CurrentMacro is null) { MacroMessage.Text = "Create or select a macro first."; return; } CurrentMacro.Steps.Add(new() { Action = action, Control = control, DelayMs = delay }); StepsList.Items.Refresh(); MacroMessage.Text = ""; }
     private void RemoveStep_Click(object sender, RoutedEventArgs e) { if (CurrentMacro is null || StepsList.SelectedItem is not MacroStep step) return; CurrentMacro.Steps.Remove(step); StepsList.Items.Refresh(); }
+    private async void ExportMacro_Click(object sender, RoutedEventArgs e)
+    {
+        if (CurrentMacro is null) return;
+        var dialog = new SaveFileDialog { Filter = "BigKev macro (*.bigkev-macro.json)|*.bigkev-macro.json|JSON (*.json)|*.json", FileName = SafeFileName(CurrentMacro.Name) + ".bigkev-macro.json" };
+        if (dialog.ShowDialog(this) != true) return;
+        await _store.ExportMacroAsync(CurrentMacro, dialog.FileName);
+        StatusLabel.Text = $"Exported macro {CurrentMacro.Name}";
+    }
+
+    private async void ImportMacro_Click(object sender, RoutedEventArgs e)
+    {
+        if (Current is null) return;
+        var dialog = new OpenFileDialog { Filter = "BigKev macro (*.bigkev-macro.json;*.json)|*.bigkev-macro.json;*.json" };
+        if (dialog.ShowDialog(this) != true) return;
+        try
+        {
+            var macro = await _store.ImportMacroAsync(dialog.FileName);
+            Current.Macros.Add(macro);
+            await _store.SaveAsync(Current);
+            MacrosList.Items.Refresh();
+            MacrosList.SelectedItem = macro;
+            StatusLabel.Text = $"Imported macro {macro.Name}";
+        }
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(ex.Message, "Could not import macro", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
     private async void SaveMacro_Click(object sender, RoutedEventArgs e)
     {
         if (CurrentMacro is null || Current is null) return;
@@ -170,7 +255,7 @@ public partial class MainWindow : Window
         _controller.Start();
         DriverInstallButton.Content = _output.IsReady ? "Driver installed" : "Install DualSense driver";
         DriverInstallButton.IsEnabled = !_output.IsReady;
-        StatusLabel.Text = _output.IsReady ? "Virtual PS5 DualSense active" : "Driver setup did not complete. Check the status message above, then try again.";
+        StatusLabel.Text = _output.IsReady ? "Virtual Xbox controller active (XInput)" : "Driver setup did not complete. Check the status message above, then try again.";
     }
 
     private void UpdateControllerDisplay(DualSenseState state)
