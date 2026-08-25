@@ -10,6 +10,8 @@ using System.Windows.Media;
 using Microsoft.Win32;
 using System.IO;
 using System.Text.Json;
+using System.Windows.Threading;
+using System.Net.Http;
 
 namespace PadPilot;
 
@@ -20,30 +22,42 @@ public partial class MainWindow : Window
     private readonly VirtualDualSenseOutput _output = new();
     private readonly ObservableCollection<Profile> _profiles = [];
     private bool _bindingProfile;
+    private Profile? _outputProfile;
+    private DualSenseState? _latestControllerState;
+    private int _controllerTestActive;
+    private readonly DispatcherTimer _controllerDisplayTimer;
     private Profile? Current => ProfilesList.SelectedItem as Profile;
     private MacroDefinition? CurrentMacro => MacrosList.SelectedItem as MacroDefinition;
 
     public MainWindow()
     {
         InitializeComponent();
+        _controllerDisplayTimer = new DispatcherTimer(DispatcherPriority.Background)
+        {
+            Interval = TimeSpan.FromMilliseconds(33)
+        };
+        _controllerDisplayTimer.Tick += (_, _) =>
+        {
+            var state = Volatile.Read(ref _latestControllerState);
+            if (state is null) return;
+            LiveInputLabel.Text = state.Summary;
+            UpdateControllerDisplay(state);
+        };
         MappingKindColumn.ItemsSource = Enum.GetValues<MappingKind>();
         MacroControlInput.ItemsSource = new[] { "Cross", "Circle", "Square", "Triangle", "L1", "R1", "L2", "R2", "Create", "Options", "Left Stick Click (L3)", "Right Stick Click (R3)", "Left Stick Up", "Left Stick Down", "Left Stick Left", "Left Stick Right", "Right Stick Up", "Right Stick Down", "Right Stick Left", "Right Stick Right", "PS", "Touchpad", "Mute", "Dpad Up", "Dpad Down", "Dpad Left", "Dpad Right" };
         MacroTriggerInput.ItemsSource = MacroControlInput.ItemsSource;
         MacroControlInput.SelectedIndex = 0;
         MacroTriggerInput.SelectedIndex = 0;
         OutputModeInput.ItemsSource = Enum.GetValues<VirtualOutputMode>();
+        VersionLabel.Text = $"Installed version {UpdateService.CurrentVersionText}";
         _controller.StatusChanged += message => Dispatcher.Invoke(() => ConnectionLabel.Text = message);
         _controller.StateChanged += state =>
         {
-            // StateChanged fires on the background USB-reading thread. Every touch of the UI
-            // (including reading Current, which reads ProfilesList.SelectedItem) must happen on
-            // the dispatcher thread or WPF throws.
-            Dispatcher.Invoke(() =>
-            {
-                _output.Update(state, Current);
-                LiveInputLabel.Text = state.Summary;
-                UpdateControllerDisplay(state);
-            });
+            // Controller output stays on the USB reader thread so rendering or resizing the
+            // window can never add input latency. The UI reads only the latest state at 30 Hz.
+            _output.Update(state, Volatile.Read(ref _outputProfile));
+            if (Volatile.Read(ref _controllerTestActive) == 1)
+                Volatile.Write(ref _latestControllerState, state);
         };
         _output.StatusChanged += message => Dispatcher.Invoke(() =>
         {
@@ -51,7 +65,7 @@ public partial class MainWindow : Window
             _controller.SetManagedIndicator(_output.IsReady);
         });
         _output.VirtualDualSensePathsChanged += paths => _controller.ExcludeDevicePaths(paths);
-        Closed += (_, _) => { _controller.Dispose(); _output.Dispose(); };
+        Closed += (_, _) => { _controllerDisplayTimer.Stop(); _controller.Dispose(); _output.Dispose(); };
         ProfilesList.ItemsSource = _profiles;
         Loaded += async (_, _) =>
         {
@@ -90,11 +104,14 @@ public partial class MainWindow : Window
             MacrosList.ItemsSource = profile.Macros;
             LeftDeadZone.Value = profile.LeftStickDeadZone;
             RightDeadZone.Value = profile.RightStickDeadZone;
+            LeftDeadZoneEnabled.IsChecked = profile.LeftStickDeadZoneEnabled;
+            RightDeadZoneEnabled.IsChecked = profile.RightStickDeadZoneEnabled;
             OutputModeInput.SelectedItem = profile.OutputMode;
             L2DownAssistEnabled.IsChecked = profile.L2RightStickDownAssistEnabled;
             L2DownAssistAmount.Value = profile.L2RightStickDownAssistAmount;
         }
         finally { _bindingProfile = false; }
+        RefreshOutputProfile();
     }
 
     private void ProfilesList_SelectionChanged(object sender, SelectionChangedEventArgs e) => BindProfile(Current);
@@ -110,7 +127,8 @@ public partial class MainWindow : Window
     private void DuplicateProfile_Click(object sender, RoutedEventArgs e)
     {
         if (Current is null) return;
-        var copy = new Profile { Name = Current.Name + " copy", LeftStickDeadZone = Current.LeftStickDeadZone, RightStickDeadZone = Current.RightStickDeadZone, OutputMode = Current.OutputMode,
+        var copy = new Profile { Name = Current.Name + " copy", LeftStickDeadZone = Current.LeftStickDeadZone, RightStickDeadZone = Current.RightStickDeadZone,
+            LeftStickDeadZoneEnabled = Current.LeftStickDeadZoneEnabled, RightStickDeadZoneEnabled = Current.RightStickDeadZoneEnabled, OutputMode = Current.OutputMode,
             L2RightStickDownAssistEnabled = Current.L2RightStickDownAssistEnabled, L2RightStickDownAssistAmount = Current.L2RightStickDownAssistAmount,
             Mappings = Current.Mappings.Select(m => new ButtonMapping { Source = m.Source, Target = m.Target, Kind = m.Kind }).ToList(),
             Macros = Current.Macros.Select(CloneMacro).ToList() };
@@ -170,13 +188,42 @@ public partial class MainWindow : Window
     {
         if (_bindingProfile || Current is null) return;
         Current.LeftStickDeadZone = LeftDeadZone.Value; Current.RightStickDeadZone = RightDeadZone.Value;
+        Current.LeftStickDeadZoneEnabled = LeftDeadZoneEnabled.IsChecked == true;
+        Current.RightStickDeadZoneEnabled = RightDeadZoneEnabled.IsChecked == true;
         Current.OutputMode = OutputModeInput.SelectedItem is VirtualOutputMode mode ? mode : VirtualOutputMode.XboxXInput;
         Current.L2RightStickDownAssistEnabled = L2DownAssistEnabled.IsChecked == true; Current.L2RightStickDownAssistAmount = L2DownAssistAmount.Value;
+        RefreshOutputProfile();
+    }
+
+    private void RefreshOutputProfile()
+    {
+        if (Current is not { } profile) { Volatile.Write(ref _outputProfile, null); return; }
+        var snapshot = new Profile
+        {
+            Id = profile.Id,
+            Name = profile.Name,
+            LeftStickDeadZone = profile.LeftStickDeadZone,
+            RightStickDeadZone = profile.RightStickDeadZone,
+            LeftStickDeadZoneEnabled = profile.LeftStickDeadZoneEnabled,
+            RightStickDeadZoneEnabled = profile.RightStickDeadZoneEnabled,
+            OutputMode = profile.OutputMode,
+            L2RightStickDownAssistEnabled = profile.L2RightStickDownAssistEnabled,
+            L2RightStickDownAssistAmount = profile.L2RightStickDownAssistAmount,
+            Mappings = profile.Mappings.Select(m => new ButtonMapping { Source = m.Source, Target = m.Target, Kind = m.Kind }).ToList(),
+            Macros = profile.Macros.Select(CloneMacro).ToList()
+        };
+        Volatile.Write(ref _outputProfile, snapshot);
     }
     // Sliders and the checkbox apply immediately (like the mappings grid already does) so you can
     // hold L2 and drag the amount slider to feel out the right value before saving to disk.
     private void StickTuningSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e) => ApplyStickTuning();
     private void StickTuningCheckBox_Changed(object sender, RoutedEventArgs e) => ApplyStickTuning();
+    private void StickDeadZoneCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        LeftDeadZone.IsEnabled = LeftDeadZoneEnabled.IsChecked == true;
+        RightDeadZone.IsEnabled = RightDeadZoneEnabled.IsChecked == true;
+        ApplyStickTuning();
+    }
     private void OutputModeInput_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_bindingProfile) return;
@@ -241,6 +288,7 @@ public partial class MainWindow : Window
         var error = MacroValidator.Validate(CurrentMacro); MacroMessage.Text = error ?? "Macro looks good.";
         if (error is not null) return;
         await _store.SaveAsync(Current); MacrosList.Items.Refresh(); StatusLabel.Text = $"Saved macro {CurrentMacro.Name}";
+        RefreshOutputProfile();
     }
     private static MacroDefinition CloneMacro(MacroDefinition m) => new() { Name = m.Name, TriggerControl = m.TriggerControl, RepeatWhileHeld = m.RepeatWhileHeld, Steps = m.Steps.Select(s => new MacroStep { Action = s.Action, Control = s.Control, DelayMs = s.DelayMs }).ToList() };
 
@@ -278,6 +326,53 @@ public partial class MainWindow : Window
         Light(VizOptions, "Options"); Light(VizPS, "PS");
         VizL3.Fill = state.Buttons.Contains("L3") ? on : off; VizR3.Fill = state.Buttons.Contains("R3") ? on : off;
         VizStickValues.Text = $"L {state.LeftX},{state.LeftY}    R {state.RightX},{state.RightY}";
+    }
+
+    private void ToggleControllerTest_Click(object sender, RoutedEventArgs e)
+    {
+        if (Interlocked.CompareExchange(ref _controllerTestActive, 1, 0) == 0)
+        {
+            ControllerTestButton.Content = "Stop controller test";
+            LiveInputLabel.Text = "Controller test running…";
+            _controllerDisplayTimer.Start();
+            return;
+        }
+
+        Interlocked.Exchange(ref _controllerTestActive, 0);
+        _controllerDisplayTimer.Stop();
+        Volatile.Write(ref _latestControllerState, null);
+        ControllerTestButton.Content = "Start controller test";
+        LiveInputLabel.Text = "Controller visualization paused";
+        UpdateControllerDisplay(new DualSenseState(128, 128, 128, 128, 0, 0,
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase)));
+        VizStickValues.Text = "Controller test stopped";
+    }
+
+    private async void CheckForUpdates_Click(object sender, RoutedEventArgs e)
+    {
+        CheckForUpdatesButton.IsEnabled = false;
+        UpdateMessage.Text = "Checking GitHub for updates…";
+        try
+        {
+            var update = await UpdateService.CheckAsync();
+            if (update is null)
+            {
+                UpdateMessage.Text = $"BigKev {UpdateService.CurrentVersionText} is up to date.";
+                return;
+            }
+            UpdateMessage.Text = $"BigKev {update.Version} is available.";
+            var install = MessageBox.Show($"BigKev {update.Version} is available. Download, install, and restart now?",
+                "BigKev update available", MessageBoxButton.YesNo, MessageBoxImage.Information) == MessageBoxResult.Yes;
+            if (!install) return;
+            UpdateMessage.Text = "Downloading update… BigKev will restart when ready.";
+            await UpdateService.DownloadAndRestartAsync(update);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or IOException or InvalidOperationException or JsonException or TaskCanceledException)
+        {
+            UpdateMessage.Text = "Update check failed.";
+            MessageBox.Show(ex.Message, "Could not update BigKev", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally { CheckForUpdatesButton.IsEnabled = true; }
     }
 }
 
