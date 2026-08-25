@@ -82,7 +82,7 @@ public sealed class VirtualDualSenseOutput : IDisposable
             leftY = MacroAxis(leftY, macroActions, "Left Stick Up", "Left Stick Down");
             rightX = MacroAxis(rightX, macroActions, "Right Stick Left", "Right Stick Right");
             rightY = MacroAxis(rightY, macroActions, "Right Stick Up", "Right Stick Down");
-            rightY = ApplyL2RightStickDownAssist(rightY, input, profile);
+            rightY = ApplyL2R2RightStickDownAssist(rightY, input, profile);
             var state = new HMGamepadState
             {
                 Axes = HMGamepadStateHelpers.StandardAxes(_profile, leftX, leftY, rightX, rightY, input.LeftTrigger / 255f, input.RightTrigger / 255f),
@@ -99,10 +99,12 @@ public sealed class VirtualDualSenseOutput : IDisposable
         return (float)Math.Clamp((n + 1) / 2, 0, 1);
     }
 
-    private static float ApplyL2RightStickDownAssist(float rightY, DualSenseState input, Profile? profile)
+    private static float ApplyL2R2RightStickDownAssist(float rightY, DualSenseState input, Profile? profile)
     {
         if (profile is null || !profile.L2RightStickDownAssistEnabled) return rightY;
-        if (!input.Buttons.Contains("L2") && input.LeftTrigger < 8) return rightY;
+        var leftHeld = input.Buttons.Contains("L2") || input.LeftTrigger >= 8;
+        var rightHeld = input.Buttons.Contains("R2") || input.RightTrigger >= 8;
+        if (!leftHeld || !rightHeld) return rightY;
         var amount = Math.Clamp(profile.L2RightStickDownAssistAmount, 0, 0.5);
         return (float)Math.Clamp(0.5 + amount, 0, 1);
     }
