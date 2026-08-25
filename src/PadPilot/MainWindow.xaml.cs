@@ -19,6 +19,7 @@ public partial class MainWindow : Window
     private readonly DualSenseUsbReader _controller = new();
     private readonly VirtualDualSenseOutput _output = new();
     private readonly ObservableCollection<Profile> _profiles = [];
+    private bool _bindingProfile;
     private Profile? Current => ProfilesList.SelectedItem as Profile;
     private MacroDefinition? CurrentMacro => MacrosList.SelectedItem as MacroDefinition;
 
@@ -58,11 +59,13 @@ public partial class MainWindow : Window
             if (_profiles.Count == 0) _profiles.Add(CreateStarterProfile());
             ProfilesList.SelectedIndex = 0;
             var physicalBeforeOutput = DualSenseUsbReader.CurrentDevicePaths();
-            _output.Start();
+            _output.Start(Current?.OutputMode ?? VirtualOutputMode.XboxXInput);
             await Task.Delay(600);
             var pathsAfterOutput = DualSenseUsbReader.CurrentDevicePaths();
             _controller.ExcludeDevicePaths(pathsAfterOutput.Except(physicalBeforeOutput));
             _controller.Start();
+            DriverInstallButton.Content = _output.IsReady ? "Driver installed" : "Install DualSense driver";
+            DriverInstallButton.IsEnabled = !_output.IsReady;
         };
     }
 
@@ -79,14 +82,19 @@ public partial class MainWindow : Window
     private void BindProfile(Profile? profile)
     {
         if (profile is null) return;
-        ProfileName.Text = profile.Name;
-        MappingsGrid.ItemsSource = profile.Mappings;
-        MacrosList.ItemsSource = profile.Macros;
-        LeftDeadZone.Value = profile.LeftStickDeadZone;
-        RightDeadZone.Value = profile.RightStickDeadZone;
-        OutputModeInput.SelectedItem = profile.OutputMode;
-        L2DownAssistEnabled.IsChecked = profile.L2RightStickDownAssistEnabled;
-        L2DownAssistAmount.Value = profile.L2RightStickDownAssistAmount;
+        _bindingProfile = true;
+        try
+        {
+            ProfileName.Text = profile.Name;
+            MappingsGrid.ItemsSource = profile.Mappings;
+            MacrosList.ItemsSource = profile.Macros;
+            LeftDeadZone.Value = profile.LeftStickDeadZone;
+            RightDeadZone.Value = profile.RightStickDeadZone;
+            OutputModeInput.SelectedItem = profile.OutputMode;
+            L2DownAssistEnabled.IsChecked = profile.L2RightStickDownAssistEnabled;
+            L2DownAssistAmount.Value = profile.L2RightStickDownAssistAmount;
+        }
+        finally { _bindingProfile = false; }
     }
 
     private void ProfilesList_SelectionChanged(object sender, SelectionChangedEventArgs e) => BindProfile(Current);
@@ -160,7 +168,7 @@ public partial class MainWindow : Window
     }
     private void ApplyStickTuning()
     {
-        if (Current is null) return;
+        if (_bindingProfile || Current is null) return;
         Current.LeftStickDeadZone = LeftDeadZone.Value; Current.RightStickDeadZone = RightDeadZone.Value;
         Current.OutputMode = OutputModeInput.SelectedItem is VirtualOutputMode mode ? mode : VirtualOutputMode.XboxXInput;
         Current.L2RightStickDownAssistEnabled = L2DownAssistEnabled.IsChecked == true; Current.L2RightStickDownAssistAmount = L2DownAssistAmount.Value;
@@ -171,6 +179,7 @@ public partial class MainWindow : Window
     private void StickTuningCheckBox_Changed(object sender, RoutedEventArgs e) => ApplyStickTuning();
     private void OutputModeInput_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        if (_bindingProfile) return;
         ApplyStickTuning();
         StatusLabel.Text = "Output mode will switch on the next controller input.";
     }
