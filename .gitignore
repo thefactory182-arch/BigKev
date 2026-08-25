@@ -1,0 +1,15 @@
+# Build output
+bin/
+obj/
+outputs/
+work/
+
+# IDE and user settings
+.vs/
+.vscode/
+*.user
+*.suo
+
+# Restored third-party binary (see README)
+src/PadPilot/ThirdParty/HIDMaestro/HIDMaestro.Core.dll
+
