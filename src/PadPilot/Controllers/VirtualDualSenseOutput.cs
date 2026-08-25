@@ -74,7 +74,8 @@ public sealed class VirtualDualSenseOutput : IDisposable
             var requestedMode = profile?.OutputMode ?? VirtualOutputMode.XboxXInput;
             if (_activeMode != requestedMode) StartCore(requestedMode);
             if (_controller is null || _profile is null) return;
-            var leftDz = profile?.LeftStickDeadZone ?? 0.08; var rightDz = profile?.RightStickDeadZone ?? 0.08;
+            var leftDz = profile?.LeftStickDeadZoneEnabled == true ? profile.LeftStickDeadZone : 0;
+            var rightDz = profile?.RightStickDeadZoneEnabled == true ? profile.RightStickDeadZone : 0;
             var macroActions = _macros.UpdateAndGet(input, profile);
             var leftX = Axis(input.LeftX, leftDz); var leftY = Axis(input.LeftY, leftDz);
             var rightX = Axis(input.RightX, rightDz); var rightY = Axis(input.RightY, rightDz);
